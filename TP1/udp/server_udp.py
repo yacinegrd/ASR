@@ -7,7 +7,7 @@ server_socket.bind(("localhost", 60000))
 while True:
     client_message, client_addr = server_socket.recvfrom(1024)
     
-    print(f'{client_message.decode()} from {client_addr}')
+    print(f'{client_message.decode()} from {client_addr[1]}')
     
     if client_message.decode() == 'end':
         break
