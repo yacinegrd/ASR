@@ -1,53 +1,59 @@
+import threading as th
 import socket as sc
-import sys, os, time
-from pynput import keyboard
-import threading
-# le premier neod cree est le consomateur 
-# le consomateur consome un message chaque 5s 
+import json, sys 
+import os
+
+def show_console_msg(msg : str = ''):
+    if not msg == '':
+        print(msg)
+    print("Press Enter to continue ...")
+    input()
+
 
 class Node:
     def __init__(self, host: str, port: int) -> None:
-        # init socket variables
-        self.host = host
-        self.port = port
+        # init socket variables 
+        self.host = host 
+        self.port = port 
         self.sock = sc.socket(sc.AF_INET, sc.SOCK_DGRAM)
-        
-        # bind socket to given addr
+
+        # bind socket to given address 
         try : self.sock.bind((host, port))
-        except OSError: 
+        except OSError:
             print(f"can't reserve {host}:{port} for this node")
             self.sock.close()
-            exit(0) 
-        
+            sys.exit(0)
+
+        # init node variables
         self._token = False
         self.next_node = 0
-        self.neighbors = Node.get_neighbors()
-        self.add_to_bdd()
         self.node_closed = False
+        self.neighbors = Node.get_neighbors()
+        
+        # add to database
+        self.add_to_bdd()
 
-    def broadcast(self, msg: str) -> None: # send message to all nodes
+    def broadcast(self, msg: str) -> None : # send message to all nodes
         for neighbor_port in self.neighbors:
             self.sock.sendto(msg.encode(), (self.host, neighbor_port))
-    
-    def add_to_bdd(self) -> None: # add port number to database
-        with open('BDD.txt', 'a', encoding='utf-8') as file:
+
+    def add_to_bdd(self) -> None : # add port number to database
+        with open('database.txt', 'a', encoding='utf-8') as file:
             file.write(f'{self.port}\n')
 
-    def close_node(self) -> None: # properly closing node 
-        self.broadcast('QUIT')
+    def close_node(self) -> None : # closing the node properly
+        with open('database.txt', 'r', encoding='utf-8') as file:
+            ports = [ line.strip('\n') for line in file.readlines() ] 
         
-        self.sock.close()
-
-        with open('BDD.txt', 'r', encoding='utf-8') as file:
-            lines = [ line.strip('\n') for line in file.readlines() ]
-
-        with open('BDD.txt', 'w', encoding='utf-8') as file:
-            for port in lines: 
+        with open('database.txt', 'w', encoding='utf-8') as file:
+            for port in ports:
                 if port != str(self.port): # ignore self port 
                     file.write(f'{port}\n')
-        
-        self.node_closed = True
 
+        self.broadcast('QUIT')
+        self.node_closed = True
+        self.sock.close()
+    
     def convertPortNumber(string: str) -> int: # convert port number from str to int
         try :
             port = int(string)
@@ -60,172 +66,208 @@ class Node:
             return port
     
     def get_neighbors() -> list[int]:
-        with open('BDD.txt', 'r', encoding='utf-8') as file:
+        with open('database.txt', 'r', encoding='utf-8') as file:
             return [ Node.convertPortNumber(line) for line in file.readlines() ]
 
-# envoie message quand il recoi token 
 class Producteur(Node):
     def __init__(self, host: str, port: int) -> None:
         super().__init__(host, port)
-        self.port_consomateur = Producteur.get_consomateur()
-        self._send_event = threading.Event()
-        self.next_node = self.port_consomateur
-        self.broadcast('NEW')
-        print('Producteur initialiser')
-
         
-    def get_consomateur() -> int :
-        with open('BDD.txt', 'r', encoding='utf-8') as file: 
-            return Node.convertPortNumber(file.readlines()[0])
+        self.port_consomateur = Producteur.get_consomateur()
+        self.next_node = self.port_consomateur
 
-    def receive(self):
-        print('receive is running')
+        self.broadcast('NEW')
 
-        while True:
-            try: msg , ( _ , port) = self.sock.recvfrom(1024) 
-            except OSError: 
-                print('rcv FAILED')
-                break
+        th_receive = th.Thread(target=self.recieve)
+        th_receive.start()
+        self.menu()
+
+
+    # return the port number int the first line of the file
+    def get_consomateur() -> int : 
+        with open('database.txt', 'r', encoding='utf-8') as file:
+            return Node.convertPortNumber(file.readline())
+        
+    def menu(self):
+        while not self.node_closed:
+            os.system('clear' if os.name == 'posix' else 'cls')
+            print('       Producteur')
+
+            if self._token:
+                print('---------TOKEN---------')
+            print("1 - send token")
+            print("2 - send message")
+            print("3 - refresh")
+            print("4 - show info")
+            print("5 - quit")
+
+            choix = int(input('Make your choice : '))
+
+            os.system('clear' if os.name == 'posix' else 'cls')
             
-            match msg.decode():
+            match choix:
+                case 1:
+                    if self._token:
+                        self._token = False
+                        self.sock.sendto(b'TOKEN', (self.host, self.next_node))
+                    else :
+                        show_console_msg("You can't perform this action without the token")
+                case 2:
+                    if self._token:
+                        message = input('Enter your message : ')
+                        if message not in ['TOKEN', 'MEMORY FULL', 'NEW', 'QUIT']:
+                            self.sock.sendto(message.encode(), (self.host, self.port_consomateur))
+                    else:
+                        show_console_msg("You can't perform this action without the token")
+                case 3: continue    
+                case 4:
+                    print(f'HOST :      {self.host}')    
+                    print(f'PORT :      {self.port}')
+                    print(f'NEXT NODE : {self.next_node}')
+                    print(f'NEIGHBORS :')
+                    for port in self.neighbors:
+                        print(f'    {port}')
+
+                    show_console_msg()
+                case 5:
+                    self.close_node()
+                    continue
+
+    
+    def recieve(self):
+        while not self.node_closed:
+            try : 
+                message, ( _ , port) = self.sock.recvfrom(1024)
+            except OSError : 
+                print('quit')
+                break
+
+            match message.decode():
                 case 'NEW':
                     self.neighbors.append(port)
                     if self.next_node == self.port_consomateur:
                         self.next_node = port
-                
-                case 'QUIT':
-                    self.neighbors.remove(port)
-                
                 case 'TOKEN':
                     self._token = True
-                    print('TOKEN RECEIVED')
-                    self._send_event.set()
-                
                 case 'MEMORY FULL':
-                    print('MEMORY FULL')
-                    self._send_event.set()
-                
-                case 'ACK' : 
-                    print('message has been sent successfully')
-                    self._send_event.set()
-        print('rcv closed')
-
-    def send(self):
-        while True: 
-            self._send_event.wait()
-            
-            if self.node_closed:
-                break
-            
-            try : msg = input('send message : ')
-            except KeyboardInterrupt:
-                break
-            
-            if msg in ['NEW', 'QUIT', 'TOKEN', 'MEMORY FULL', 'ACK']:
-                print(f'WARNING : {msg} is not allowed ')
-            else:
-                self.sock.sendto(msg.encode(), (self.host, self.port_consomateur))
-                self._send_event.clear()
-        print('send closed')
-                
-    def on_key_press(self, key):
-            match key:
-                case keyboard.Key.esc: 
-                    if self._token:
-                        self.sock.sendto('TOKEN'.encode(), (self.host, self.next_node))
-                        self.close_node()
-                        self._send_event.set()
-                        return False
-
-                case keyboard.Key.tab: # send token on espace
-                    print(f'{self.next_node} {self._token}') 
-                    if self._token:
-                        self._token = False
-                        self.sock.sendto('TOKEN'.encode(), (self.host, self.next_node))
-                        self._send_event.clear()
+                    continue
+                case 'QUIT':
+                    self.neighbors.remove(port)
 
 
-# recoi des message et les affiches
+
+        
 class Consomateur(Node):
     def __init__(self, host: str, port: int, max_memory: int) -> None:
         super().__init__(host, port)
+        self.messages = []
+        self.max_memory = 5
         self._token = True
-        self.tampon : list[str] = []
-        self.max_memory = max_memory
+        
+        th_receive = th.Thread(target=self.receive)
+        th_receive.start()
+        self.menu()
 
-        print('Consomateur initialiser')
+    def menu(self): 
+        while not self.node_closed:
+            os.system('clear' if os.name == 'posix' else 'cls')
+            print('      Consomateur')
 
-    def receive(self) -> None:
-        print('receive is running')
-        while True:
-            try: msg , ( _ , port) = self.sock.recvfrom(1024) 
-            except OSError: 
-                print('receive stoped running')
-                self.close_node() 
+            if self._token:
+                print('---------TOKEN---------')
+            print("1 - send token")
+            print("2 - show messages")
+            print("3 - consume messages")
+            print("4 - refresh")
+            print("5 - show info")
+            print("6 - quit")
+
+            try:
+                choix = int(input('Make your choice : '))
+            except ValueError:
+                os.system('clear' if os.name == 'posix' else 'cls')
+                show_console_msg('Your choice must an integer between 1 and 6 :')
+                continue
+        
+            if choix not in [*range(1,7)]:
+                os.system('clear' if os.name == 'posix' else 'cls')
+                show_console_msg('Your choice must be between 1 and 6 :')
+                continue
+
+            os.system('clear' if os.name == 'posix' else 'cls')
+
+
+            match choix:
+                case 1:
+                    if self.next_node == 0:
+                        show_console_msg("No producer is runnig for now")
+                    elif self._token:
+                        self._token = False
+                        print(f'sending to ({self.host}, {self.next_node})')
+                        print(f'{self.neighbors}')
+                        self.sock.sendto(b'TOKEN', (self.host, self.next_node))
+                    else :
+                        show_console_msg("You can't perform this action without the token")
+                case 2:
+                    if len(self.messages) == 0:
+                        show_console_msg("There's no message to be showen")
+                    else:
+                        for msg in self.messages:
+                            print(f'- {msg}')
+                        show_console_msg()
+                case 3:
+                    if self._token:
+                        self.messages.clear()
+                    else :
+                        show_console_msg("You can't perform this action without the token")
+                case 4: continue
+                case 5:
+                    print(f'HOST :      {self.host}')    
+                    print(f'PORT :      {self.port}')
+                    print(f'MAX MSG :   {self.max_memory}')
+                    print(f'NEXT NODE : {self.next_node}')
+                    print(f'NEIGHBORS :')
+                    for port in self.neighbors:
+                        print(f'    {port}')
+
+                    show_console_msg()
+                case 6:
+                    self.close_node()
+                    continue
+                    
+    
+    def receive(self):
+        while not self.node_closed:
+            try : 
+                message, ( _ , port) = self.sock.recvfrom(1024)
+            except (OSError, KeyboardInterrupt) as e : 
+                print('quit')
                 break
-            
-            match msg.decode():
+
+            match message.decode():
                 case 'NEW':
                     self.neighbors.append(port)
-                    if self.next_node == 0 : 
+                    if self.next_node == 0:
                         self.next_node = port
-                
-                case 'QUIT':
-                    self.neighbors.remove(port)
-                    if self.next_node == port and len(self.neighbors) > 0: 
-                       self.next_node = self.neighbors[0] 
-                
                 case 'TOKEN':
                     self._token = True
-                    print('TOKEN RECEIVED')
-                
-                case _:
-                    if len(self.tampon) >= self.max_memory:
-                        self.sock.sendto('MEMORY FULL'.encode(), (self.host, port))
-                    else :
-                        self.sock.sendto('ACK'.encode(), (self.host, port))
-                        self.tampon.append(msg.decode())
+                case 'QUIT':
+                    self.neighbors.remove(port)
+                case _ :
+                    if len(self.messages) < self.max_memory:
+                        self.messages.append(f"{port}: {message.decode()}")
+                    else:
+                        self.sock.sendto(b'MEMORY FULL', (self.host, port))
 
-    def consume(self) -> None:
-        print('consume is running')
-        while True:
-            time.sleep(2)
-            if self.node_closed:
-                break
-            if len(self.tampon) > 0:
-                print(self.tampon[0])
-                self.tampon.pop(0)
-        print('consume stoped running')
 
-    
-    def on_key_press(self, key):
-        match key:
-            case keyboard.Key.esc: 
-                if self._token:
-                    print('haha')
-                    self.sock.sendto('TOKEN'.encode(), (self.host, self.next_node))
-                    self.close_node()
-                    return False # return False stops the event listner
-            case keyboard.Key.tab: # send token on espace 
-                print(f'{self.next_node} {self._token}')
-                if self._token:
-                    self._token = False
-                    self.sock.sendto('TOKEN'.encode(), (self.host, self.next_node))
-    
 
-if __name__ == "__main__" :
-    
-    if os.path.getsize('./BDD.txt') == 0: # check if file is empty 
-        node = Consomateur('127.0.0.1', Node.convertPortNumber(sys.argv[1]), 5)
+if __name__ == '__main__':
+    host = 'localhost'
+    port = Node.convertPortNumber(sys.argv[1])
 
-        th_receive = threading.Thread(target=node.receive).start()
-        th_consume = threading.Thread(target=node.consume).start()
-        with keyboard.Listener(on_release=node.on_key_press) as L:
-            L.join()
-    
+
+    if os.path.getsize('database.txt') == 0:
+        Consomateur(host, port, max_memory=5)
     else :
-        node = Producteur('127.0.0.1', Node.convertPortNumber(sys.argv[1]))
-        th_receive = threading.Thread(target=node.receive).start()
-        th_send = threading.Thread(target=node.send).start()
-        with keyboard.Listener(on_release=node.on_key_press) as L:
-            L.join()
+        Producteur(host, port)
+            
